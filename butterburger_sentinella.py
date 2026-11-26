@@ -10,7 +10,8 @@ poi completi tu la prenotazione.
 Uso:
     python butterburger_sentinella.py          -> resta acceso e controlla di continuo
     python butterburger_sentinella.py --test   -> un solo controllo + notifica di prova
-    python butterburger_sentinella.py --una-volta -> un controllo e basta (usato da GitHub Actions)
+    python butterburger_sentinella.py --una-volta -> un controllo e basta
+    python butterburger_sentinella.py --per-minuti 330 -> controlla per 330 minuti (usato da GitHub Actions)
 
 Non serve installare nulla oltre a Python 3.
 """
@@ -33,7 +34,6 @@ ORA_MIN = "19:30"            # primo orario accettato (turno delle 19:30)
 ORA_MAX = "22:30"            # ultimo orario accettato (turno delle 22:30)
 OGNI_MINUTI = 3              # ogni quanti minuti ricontrollare
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")  # stesso nome nell'app ntfy
-EMAIL_AVVISI = os.environ.get("EMAIL_AVVISI", "")  # se impostata, l'avviso arriva anche per email
 # ============================================================
 
 API = "https://butterburger.it/wp-json/restaurantreservationsandtakeawaysbyfocuson/v1"
@@ -104,8 +104,9 @@ def data_bella(d):
 
 
 def notifica_telefono(titolo, testo):
+    """Manda la notifica push; restituisce True solo se ntfy l'ha accettata."""
     if not NTFY_TOPIC:
-        return
+        return False
     corpo = json.dumps({
         "topic": NTFY_TOPIC,
         "title": titolo,
@@ -114,15 +115,18 @@ def notifica_telefono(titolo, testo):
         "tags": ["hamburger"],
         "click": LINK,
         "actions": [{"action": "view", "label": "Prenota ora", "url": LINK}],
-        **({"email": EMAIL_AVVISI} if EMAIL_AVVISI else {}),
     }).encode("utf-8")
     req = urllib.request.Request(
         "https://ntfy.sh/", data=corpo, headers={"Content-Type": "application/json"}
     )
-    try:
-        urllib.request.urlopen(req, timeout=15)
-    except Exception as e:
-        print(f"  (notifica telefono non inviata: {e})")
+    for tentativo in range(3):
+        try:
+            urllib.request.urlopen(req, timeout=15)
+            return True
+        except Exception as e:
+            print(f"  (notifica telefono non inviata: {e})")
+            time.sleep(5)
+    return False
 
 
 def notifica_pc(titolo, testo):
@@ -157,8 +161,9 @@ def notifica_pc(titolo, testo):
 
 def avvisa(titolo, testo):
     print(f"\n*** {titolo}: {testo}\n    {LINK}\n")
-    notifica_telefono(titolo, testo)
+    ok = notifica_telefono(titolo, testo)
     notifica_pc(titolo, testo)
+    return ok
 
 
 def controlla():
@@ -185,20 +190,47 @@ def una_volta():
     try:
         liberi = controlla()
     except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as e:
-        print(f"[{ora_ora}] errore temporaneo ({e}), riprovo al prossimo giro")
-        return
+        print(f"[{ora_ora}] errore temporaneo ({e}), riprovo al prossimo giro", flush=True)
+        return ""
     chiavi = {f"{d.isoformat()} {ora}" for d, ora in liberi}
     nuovi = sorted((d, ora) for d, ora in liberi if f"{d.isoformat()} {ora}" not in prima)
+    testo = ""
     if nuovi:
-        righe = [f"{data_bella(d)} alle {ora}" for d, ora in nuovi]
-        avvisa("Tavolo libero da Butter Burger!", "; ".join(righe))
+        testo = "; ".join(f"{data_bella(d)} alle {ora}" for d, ora in nuovi)
+        if not avvisa("Tavolo libero da Butter Burger!", testo):
+            # avviso non partito: non lo segno come inviato, ci riprova al prossimo giro
+            chiavi -= {f"{d.isoformat()} {ora}" for d, ora in nuovi}
     else:
-        print(f"[{ora_ora}] liberi ora: {len(liberi)} (nessuno nuovo)")
+        print(f"[{ora_ora}] liberi ora: {len(liberi)} (nessuno nuovo)", flush=True)
     with open(STATO, "w", encoding="utf-8") as f:
         json.dump(sorted(chiavi), f)
+    return testo
+
+
+def per_minuti(minuti):
+    """Controlla di continuo per 'minuti' minuti; si ferma subito se trova un tavolo nuovo."""
+    fine = time.time() + minuti * 60
+    while True:
+        try:
+            testo = una_volta()
+        except Exception as e:
+            print(f"errore imprevisto ({e}), riprovo al prossimo giro", flush=True)
+            testo = ""
+        if testo:
+            out = os.environ.get("GITHUB_OUTPUT")
+            if out:
+                with open(out, "a", encoding="utf-8") as f:
+                    f.write(f"trovato=true\ntesto={testo}\n")
+            return
+        if time.time() + OGNI_MINUTI * 60 > fine:
+            return
+        time.sleep(OGNI_MINUTI * 60 + random.randint(-20, 20))
 
 
 def main():
+    if "--per-minuti" in sys.argv:
+        per_minuti(int(sys.argv[sys.argv.index("--per-minuti") + 1]))
+        return
     if "--una-volta" in sys.argv:
         try:
             una_volta()

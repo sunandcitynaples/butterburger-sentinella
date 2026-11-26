@@ -1,9 +1,16 @@
 name: Sentinella Butter Burger
 
+# Ogni esecuzione controlla di continuo (ogni ~3 minuti) per circa 5 ore e mezza,
+# poi fa partire da sola la successiva. L'orario "schedule" serve solo da riserva
+# per riavviarla se la catena si interrompe.
 on:
   schedule:
-    - cron: "2-59/5 * * * *"   # ogni 5 minuti circa (GitHub a volte ritarda)
-  workflow_dispatch:           # pulsante "Run workflow" per avviarla a mano
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
 
 concurrency:
   group: sentinella
@@ -12,11 +19,10 @@ concurrency:
 jobs:
   controlla:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 345
     env:
       TZ: Europe/Rome
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-      EMAIL_AVVISI: ${{ secrets.EMAIL_AVVISI }}
     steps:
       - uses: actions/checkout@v4
       - name: Recupera cosa è già stato segnalato
@@ -30,7 +36,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Controlla i tavoli
-        run: python butterburger_sentinella.py --una-volta
+        id: check
+        run: python -u butterburger_sentinella.py --per-minuti 330
       - name: Salva lo stato
         if: always()
         continue-on-error: true
@@ -38,3 +45,14 @@ jobs:
         with:
           path: stato.json
           key: stato-${{ github.run_id }}
+      - name: Fai ripartire la sentinella
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run sentinella.yml --ref "${{ github.ref_name }}"
+      - name: TAVOLO LIBERO - PRENOTA SUBITO
+        if: steps.check.outputs.trovato == 'true'
+        run: |
+          echo "::error title=Tavolo libero da Butter Burger::${{ steps.check.outputs.testo }} - prenota su https://butterburger.it/prenotazione/"
+          exit 1
