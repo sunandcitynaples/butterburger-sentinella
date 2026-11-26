@@ -25,6 +25,7 @@ jobs:
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
     steps:
       - uses: actions/checkout@v4
+        continue-on-error: true
       - name: Recupera cosa è già stato segnalato
         continue-on-error: true
         uses: actions/cache/restore@v4
@@ -33,11 +34,14 @@ jobs:
           key: stato-${{ github.run_id }}
           restore-keys: stato-
       - uses: actions/setup-python@v5
+        continue-on-error: true
         with:
           python-version: "3.12"
       - name: Controlla i tavoli
         id: check
-        run: python -u butterburger_sentinella.py --per-minuti 330
+        continue-on-error: true   # la corsa non risulta mai "fallita": niente email da GitHub
+        timeout-minutes: 325
+        run: python -u butterburger_sentinella.py --per-minuti 315
       - name: Salva lo stato
         if: always()
         continue-on-error: true
